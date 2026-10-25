@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- ① Le titre affiché dans l'onglet du navigateur -->
+<title>Camille Durand – Portfolio</title>
+
+<style>
+  /* ② COULEURS : change-les ici, elles s'appliquent partout */
+  :root {
+    --fond: #fbfaf7;     /* couleur de fond de la page */
+    --texte: #222;       /* couleur du texte */
+    --accent: #2457c5;   /* couleur des titres et des liens */
+    --carte: #fff;       /* fond des cartes de projets */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --fond: #16181d; --texte: #e8e8e8; --accent: #8fb0ff; --carte: #1f232b; }
+  }
+
+  /* ③ MISE EN PAGE GÉNÉRALE */
+  body {
+    margin: 0;
+    background: var(--fond);
+    color: var(--texte);
+    font-family: Georgia, serif;
+    line-height: 1.6;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 2rem 1.2rem; }
+  h1 { font-size: 2.2rem; margin: 0; }
+  h2 { color: var(--accent); margin-top: 2.5rem; border-bottom: 2px solid var(--accent); }
+  a  { color: var(--accent); }
+
+  /* ④ CARTES DE PROJETS */
+  .projet {
+    background: var(--carte);
+    border-left: 4px solid var(--accent);
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+  }
+  .projet h3 { margin: 0 0 0.3rem; }
+  .projet p  { margin: 0; }
+
+  footer { margin-top: 3rem; font-size: 0.9rem; opacity: 0.7; }
+</style>
+</head>
+
+<body>
+<main>
+
+  <!-- ⑤ EN-TÊTE : ton nom et ta phrase d'accroche -->
+  <header>
+    <h1>Camille Durand</h1>
+    <p>Designer et développeuse web, basée à Paris.</p>
+  </header>
+
+  <!-- ⑥ À PROPOS : parle de toi en quelques lignes -->
+  <h2>À propos</h2>
+  <p>
+    J'aime créer des sites simples, rapides et agréables à lire.
+    En ce moment, je m'intéresse à l'électronique et aux petits
+    objets connectés.
+  </p>
+
+  <!-- ⑦ PROJETS : copie-colle un bloc "projet" pour en ajouter un -->
+  <h2>Projets</h2>
+
+  <div class="projet">
+    <h3>Station météo</h3>
+    <p>Capteur de température et d'humidité relié à un écran.</p>
+  </div>
+
+  <div class="projet">
+    <h3>Site d'une librairie</h3>
+    <p>Catalogue en ligne pour une petite librairie indépendante.</p>
+  </div>
+
+  <div class="projet">
+    <h3>Application de recettes</h3>
+    <p>Une appli pour garder ses recettes préférées hors ligne.</p>
+  </div>
+
+  <!-- ⑧ COMPÉTENCES -->
+  <h2>Compétences</h2>
+  <p>HTML · CSS · JavaScript · Arduino · Design graphique</p>
+
+  <!-- ⑨ CONTACT : remplace par ton adresse -->
+  <h2>Contact</h2>
+  <p>
+    <a href="mailto:camille@exemple.fr">camille@exemple.fr</a><br>
+    <a href="https://github.com/">GitHub</a>
+  </p>
+
+  <footer>Page servie par un ESP32-C3</footer>
+
+</main>
+</body>
+</html>

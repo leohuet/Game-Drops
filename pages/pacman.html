@@ -1,0 +1,572 @@
+<!--
+  PACA3 — jeu d'arcade inspiré de Pac-Man, servi par un ESP32 Super Mini
+  - Point d'accès Wi-Fi ouvert "PACA", DNS captif, page sur http://4.3.2.1
+    (ou http://192.168.4.1 si USE_PUBLIC_IP vaut 0)
+  - Nouveautés par rapport à PACA2 :
+    * niveaux qui s'enchaînent, couleur des briques différente à chaque partie et à chaque niveau
+    * 4 labyrinthes sans aucun cul-de-sac, avec 2 tunnels chacun (vérifiés par script)
+    * fantômes en fuite : léger son ondulant
+    * protection contre le rechargement accidentel (geste "tirer vers le bas")
+    * son des pastilles très discret, bouton pour couper le son
+    * animation et musique de mort, clignotement du labyrinthe en fin de niveau
+    * corrigé : Paca et un fantôme ne peuvent plus se croiser sans se toucher
+  Bibliothèques : WiFi.h, WebServer.h, DNSServer.h (incluses dans le cœur Arduino ESP32)
+  Idées de portail captif reprises de CDFER/Captive-Portal-ESP32 (licence MIT) :
+  https://github.com/CDFER/Captive-Portal-ESP32
+-->
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PACA</title>
+<link rel="icon" href="data:,">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+/* Le document fait 2 px de plus que l'écran et reste décalé d'1 px :
+   la fenêtre de connexion Android ne se croit jamais "tout en haut" et ne recharge pas la page */
+html { background: #000; overscroll-behavior: none; }
+body { min-height: calc(100vh + 2px); background: #000; color: #fff; font-family: monospace;
+       overscroll-behavior: none; touch-action: none; -webkit-user-select: none; user-select: none;
+       -webkit-touch-callout: none; }
+.app { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr auto; gap: 10px;
+       padding: calc(10px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom)); }
+.topbar { display: flex; justify-content: space-between; align-items: center; color: #bbb; font-size: 14px; gap: 10px; }
+.topbar .stats { display: flex; gap: 14px; flex-wrap: wrap; }
+#mute { border: 1px solid #555; background: #000; color: #fff; border-radius: 8px; padding: 4px 10px; font-size: 16px; min-height: 0; }
+.boardWrap { min-height: 0; display: flex; align-items: center; justify-content: center; }
+canvas { display: block; width: min(96vw, 560px); height: auto; max-height: 100%; border: 2px solid #1d4ed8;
+         background: #000; image-rendering: pixelated; transition: border-color .4s; }
+.controls { display: grid; grid-template-columns: 80px 80px 80px; grid-template-rows: 64px 64px; gap: 8px; justify-content: center; }
+.controls button { border: 2px solid #fff; background: #000; color: #fff; font-family: monospace; font-size: 20px; border-radius: 12px; }
+.controls button:active { background: #222; }
+.up { grid-column: 2; grid-row: 1; } .left { grid-column: 1; grid-row: 2; }
+.down { grid-column: 2; grid-row: 2; } .right { grid-column: 3; grid-row: 2; }
+.smallbar { display: flex; justify-content: center; margin-top: 8px; min-height: 44px; }
+#restart { display: none; border: 2px solid #fff; background: #000; color: #fff; font-family: monospace; font-size: 14px; border-radius: 12px; padding: 8px 16px; }
+.overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; padding: 20px; }
+.msg { background: rgba(0,0,0,0.84); border: 1px solid #fff; padding: 12px 16px; text-align: center; font-size: 14px; line-height: 1.5; max-width: 84vw; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="stats"><span id="score">score 0</span><span id="lives">vies 3</span><span id="level">niveau 1</span></div>
+    <button id="mute" type="button" aria-label="Son">🔊</button>
+  </div>
+  <div class="boardWrap"><canvas id="game" width="420" height="360"></canvas></div>
+  <div>
+    <div class="controls">
+      <button class="up" id="up" type="button">↑</button>
+      <button class="left" id="left" type="button">←</button>
+      <button class="down" id="down" type="button">↓</button>
+      <button class="right" id="right" type="button">→</button>
+    </div>
+    <div class="smallbar"><button id="restart" type="button">rejouer</button></div>
+  </div>
+</div>
+<div class="overlay" id="overlay"><div class="msg" id="msg">LET'S GO !!!</div></div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+const overlay = $('overlay'), msg = $('msg'), restartBtn = $('restart');
+
+const TILE = 20, COLS = 21, ROWS = 18;
+const STEP_MS = 185;
+const POWER_FLASH_STEPS = 10;
+
+// ---------- Anti-rechargement ----------
+function lift(){ if (window.scrollY < 1) window.scrollTo(0, 1); }
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+window.addEventListener('scroll', lift, { passive: true });
+window.addEventListener('load', () => setTimeout(lift, 50));
+window.addEventListener('beforeunload', e => {
+  if (mode === 'play' || mode === 'dying') { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ---------- Labyrinthes (sans cul-de-sac) ----------
+// # mur   . pastille   o super-pastille   P départ de Paca   G départ d'un fantôme   espace = tunnel vide
+const mazeTemplates = [
+      [ // labyrinthe A
+        "#####################",
+        "#o........#........o#",
+        "#.###.###.#.###.###.#",
+        "#.###.###.#.###.###.#",
+        "#...................#",
+        "#.###.#.#####.#.###.#",
+        "#.....#...#...#.....#",
+        "#####.###.G.###.#####",
+        "     .#..G.G..#.     ",
+        "#####.#.#####.#.#####",
+        "#.........#.........#",
+        "#.###.###.#.###.###.#",
+        "#o..#.....P.....#..o#",
+        "###.#.#.#####.#.#.###",
+        " .....#...#...#..... ",
+        "#.#######.#.#######.#",
+        "#...................#",
+        "#####################"
+      ],
+      [ // labyrinthe B
+        "#####################",
+        "#o...#.........#...o#",
+        "#.##.#.###.###.#.##.#",
+        "#.##...#.....#...##.#",
+        "#.####.#.###.#.####.#",
+        "#......#..G..#......#",
+        "###.##.###.###.##.###",
+        "   ......G.G......   ",
+        "####.#.###.###.#.####",
+        "#....#...#.#...#....#",
+        "#.##.###.#.#.###.##.#",
+        "#..#......P......#..#",
+        "##.#.#.#######.#.#.##",
+        "   ..#.........#..   ",
+        "####.#.##.#.##.#.####",
+        "#o...#..#...#..#...o#",
+        "#...................#",
+        "#####################"
+      ],
+      [ // labyrinthe C
+        "#####################",
+        "#o.................o#",
+        "#.###.####.####.###.#",
+        "#.#.....##.##.....#.#",
+        "#.#.###.......###.#.#",
+        "#...#...##.##...#...#",
+        "###.#.#.##.##.#.#.###",
+        "    ..#..G.G..#..    ",
+        "###.#.####.####.#.###",
+        "#...#.....G.....#...#",
+        "#.###.##.###.##.###.#",
+        "#.....#...P...#.....#",
+        "#.###.#.#####.#.###.#",
+        " o..#.#...#...#.#..o ",
+        "#.#.#.###.#.###.#.#.#",
+        "#.........#.........#",
+        "#####################",
+        "#####################"
+      ],
+      [ // labyrinthe D
+        "#####################",
+        "#o....#.......#....o#",
+        "#.###.#.#####.#.###.#",
+        "#.#.......#.......#.#",
+        "#.#.##.##.#.##.##.#.#",
+        "#....#....#....#....#",
+        "####.#.#######.#.####",
+        "   ..#...G.G...#..   ",
+        "####.###.###.###.####",
+        "#.........#.........#",
+        "#.##.#.##.#.##.#.##.#",
+        "#..#.#.#..P..#.#.#..#",
+        "##.#.#.#.###.#.#.#.##",
+        " ....#.#..#..#.#.... ",
+        "#.####.##.#.##.####.#",
+        "#o........G........o#",
+        "#####################",
+        "#####################"
+      ]
+];
+
+// Couleurs des briques : [bord, intérieur]
+const PALETTES = [
+  ['#1d4ed8', '#60a5fa'],   // bleu
+  ['#15803d', '#4ade80'],   // vert
+  ['#7e22ce', '#c084fc'],   // violet
+  ['#b91c1c', '#f87171'],   // rouge
+  ['#c2410c', '#fb923c'],   // orange
+  ['#0f766e', '#2dd4bf'],   // turquoise
+  ['#be185d', '#f472b6'],   // rose
+  ['#4338ca', '#a5b4fc'],   // indigo
+];
+
+let map = [], pelletsLeft = 0, score = 0, lives = 3, level = 1;
+let mode = 'ready';               // ready | play | dying | clear | over
+let modeT = 0;                    // début de l'animation en cours (ms)
+let powerTimer = 0, ghostEatChain = 0;
+let mazeIdx = -1, palIdx = -1, pal = PALETTES[0];
+let ghostPeriod = 4;              // un fantôme avance 1 fois tous les N pas de Paca
+let powerSteps = 42;
+
+const player = { x: 0, y: 0, dirX: 0, dirY: 0, nextX: 0, nextY: 0, mouth: 0, px: 0, py: 0 };
+let ghostStarts = [], ghosts = [];
+
+function pickOther(n, prev){ if (n < 2) return 0; let i; do { i = Math.floor(Math.random() * n); } while (i === prev); return i; }
+
+// ---------- Audio ----------
+let audioCtx = null, audioUnlocked = false, muted = false;
+try { muted = localStorage.getItem('paca_mute') === '1'; } catch(e){}
+$('mute').textContent = muted ? '🔇' : '🔊';
+
+function ensureAudio(){ if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); return audioCtx; }
+function unlockAudio(){
+  try { const a = ensureAudio(); if (a.state !== 'running') a.resume(); audioUnlocked = true; } catch(e){}
+}
+
+// Note simple, avec glissement de fréquence optionnel (bend = rapport final / initial)
+function tone(freq, duration, type = 'square', volume = 0.03, when = 0, bend = 1){
+  if (!audioUnlocked || muted) return;
+  const a = ensureAudio();
+  const start = a.currentTime + when;
+  const osc = a.createOscillator(), gain = a.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  if (bend !== 1) osc.frequency.linearRampToValueAtTime(freq * bend, start + duration);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  osc.connect(gain); gain.connect(a.destination);
+  osc.start(start); osc.stop(start + duration + 0.02);
+}
+
+// Pastille : petit "tic" doux, deux hauteurs en alternance (assez aigu pour les haut-parleurs de téléphone)
+let pelletFlip = false;
+function soundPellet(){
+  pelletFlip = !pelletFlip;
+  tone(pelletFlip ? 523 : 466, 0.04, 'triangle', 0.024);
+}
+// Fantômes en fuite : un "wouh" très léger à chaque pas, qui ondule
+let preyFlip = false;
+function soundPrey(){
+  preyFlip = !preyFlip;
+  tone(preyFlip ? 247 : 220, 0.17, 'sine', 0.012, 0, 0.82);
+}
+function soundPowerPellet(){ tone(420, 0.06, 'square', 0.022); tone(620, 0.07, 'square', 0.018, 0.05); }
+function soundEatGhost(chain){
+  const base = [700, 900, 1100, 1300][Math.min(chain - 1, 3)];
+  tone(base, 0.07, 'square', 0.03); tone(base + 220, 0.08, 'square', 0.025, 0.06);
+}
+// Musique de mort (composition originale) : une descente qui "fond", puis deux notes sourdes
+function soundDeath(){
+  const notes = [880, 830, 784, 740, 698, 659, 622, 587, 554, 523, 494];
+  notes.forEach((f, i) => tone(f, 0.11, 'triangle', 0.045, i * 0.085, 0.93));
+  const end = notes.length * 0.085 + 0.06;
+  tone(220, 0.12, 'square', 0.03, end, 0.8);
+  tone(165, 0.22, 'square', 0.03, end + 0.15, 0.7);
+}
+function soundLevel(){
+  [523, 659, 784, 1046].forEach((f, i) => tone(f, i === 3 ? 0.18 : 0.09, 'square', 0.026, i * 0.11));
+}
+function soundGameOver(){
+  [[392,0.10],[330,0.12],[262,0.16],[196,0.26]].forEach(([f, d], i) => tone(f, d, 'triangle', 0.035, [0, 0.13, 0.30, 0.52][i]));
+}
+
+$('mute').addEventListener('click', () => {
+  muted = !muted;
+  try { localStorage.setItem('paca_mute', muted ? '1' : '0'); } catch(e){}
+  $('mute').textContent = muted ? '🔇' : '🔊';
+  unlockAudio();
+});
+
+// ---------- Mise en place ----------
+function show(t){ msg.innerHTML = t; overlay.style.display = 'flex'; }
+function hide(){ overlay.style.display = 'none'; }
+function updateHud(){
+  $('score').textContent = 'score ' + score;
+  $('lives').textContent = 'vies ' + lives;
+  $('level').textContent = 'niveau ' + level;
+}
+
+function isWall(x, y){ if (y < 0 || y >= ROWS || x < 0 || x >= COLS) return true; return map[y][x] === '#'; }
+function wrapX(e){ if (e.x < 0) e.x = COLS - 1; else if (e.x >= COLS) e.x = 0; }
+function canMoveTo(x, y){ if (y < 0 || y >= ROWS) return false; if (x < 0 || x >= COLS) return true; return !isWall(x, y); }
+
+function loadLevel(){
+  mazeIdx = pickOther(mazeTemplates.length, mazeIdx);
+  palIdx = pickOther(PALETTES.length, palIdx);
+  pal = PALETTES[palIdx];
+  canvas.style.borderColor = pal[0];
+  map = mazeTemplates[mazeIdx].map(r => r.split(''));
+  pelletsLeft = 0; ghostStarts = [];
+  let p = { x: 1, y: 1 };
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const c = map[y][x];
+    if (c === '.' || c === 'o') pelletsLeft++;
+    if (c === 'P') { p = { x, y }; map[y][x] = ' '; }
+    if (c === 'G') { ghostStarts.push({ x, y }); map[y][x] = '.'; pelletsLeft++; }
+  }
+  player.sx = p.x; player.sy = p.y;
+  // Difficulté qui monte doucement
+  ghostPeriod = level <= 1 ? 4 : level <= 3 ? 3 : 2;
+  powerSteps = Math.max(22, 42 - (level - 1) * 4);
+  powerTimer = 0; ghostEatChain = 0;
+  resetPositions();
+}
+
+function resetPositions(){
+  player.x = player.px = player.sx; player.y = player.py = player.sy;
+  player.dirX = player.dirY = player.nextX = player.nextY = 0;
+  ghosts = ghostStarts.map((g, i) => ({
+    startX: g.x, startY: g.y, x: g.x, y: g.y, px: g.x, py: g.y,
+    dirX: i % 2 === 0 ? 1 : -1, dirY: 0, dead: false, respawnTimer: 0,
+    moveLag: i % ghostPeriod, color: ['#ef4444', '#f59e0b', '#ec4899'][i % 3]
+  }));
+}
+
+function ready(){
+  mode = 'ready';
+  restartBtn.style.display = 'none';
+  show(level === 1 ? "LET'S GO !!!" : 'NIVEAU ' + level);
+  updateHud();
+}
+
+function newGame(){
+  score = 0; lives = 3; level = 1;
+  loadLevel();
+  ready();
+}
+
+function setDirection(dx, dy){
+  unlockAudio();
+  player.nextX = dx; player.nextY = dy;
+  if (mode === 'ready') { mode = 'play'; hide(); lastStep = 0; }
+}
+
+// ---------- Règles ----------
+function eatAtPlayer(){
+  const cell = map[player.y][player.x];
+  if (cell === '.') { map[player.y][player.x] = ' '; pelletsLeft--; score += 10; soundPellet(); }
+  else if (cell === 'o') {
+    map[player.y][player.x] = ' '; pelletsLeft--; score += 50;
+    powerTimer = powerSteps; ghostEatChain = 0; soundPowerPellet();
+  }
+  if (pelletsLeft <= 0) { mode = 'clear'; modeT = performance.now(); soundLevel(); }
+}
+
+function startDeath(){
+  mode = 'dying';
+  modeT = performance.now();
+  powerTimer = 0; ghostEatChain = 0;
+  setTimeout(soundDeath, 350);
+}
+
+function afterDeath(){
+  lives--;
+  updateHud();
+  if (lives <= 0) {
+    mode = 'over';
+    restartBtn.style.display = 'inline-block';
+    show('game over<br>score ' + score + '<br>niveau ' + level);
+    soundGameOver();
+  } else {
+    resetPositions();
+    mode = 'ready';
+    show("LET'S GO !!!");
+  }
+}
+
+function eatGhost(g){
+  g.dead = true; g.respawnTimer = 12; g.x = g.y = g.px = g.py = -20;
+  ghostEatChain++;
+  score += [0, 400, 800, 1600, 3200][Math.min(ghostEatChain, 4)];
+  soundEatGhost(ghostEatChain);
+}
+
+// Contact : même case, ou cases échangées pendant le même pas (ils se croisaient avant)
+function touching(g){
+  if (g.dead) return false;
+  if (player.x === g.x && player.y === g.y) return true;
+  return player.x === g.px && player.y === g.py && g.x === player.px && g.y === player.py;
+}
+function checkGhosts(){
+  for (const g of ghosts) {
+    if (!touching(g)) continue;
+    if (powerTimer > 0) eatGhost(g);
+    else { startDeath(); return; }
+  }
+}
+
+function movePlayer(){
+  player.px = player.x; player.py = player.y;
+  if (player.nextX || player.nextY) {
+    if (canMoveTo(player.x + player.nextX, player.y + player.nextY)) { player.dirX = player.nextX; player.dirY = player.nextY; }
+  }
+  const tx = player.x + player.dirX, ty = player.y + player.dirY;
+  if (canMoveTo(tx, ty)) { player.x = tx; player.y = ty; wrapX(player); }
+  player.mouth += 0.25;
+  eatAtPlayer();
+}
+
+function moveGhost(g, i){
+  g.px = g.x; g.py = g.y;
+  if (g.dead) {
+    if (--g.respawnTimer <= 0) {
+      g.x = g.px = g.startX; g.y = g.py = g.startY;
+      g.dirX = i % 2 === 0 ? 1 : -1; g.dirY = 0; g.dead = false;
+    }
+    return;
+  }
+  const dirs = [{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}].filter(d => canMoveTo(g.x + d.x, g.y + d.y));
+  if (!dirs.length) return;
+  let opts = dirs.filter(d => !(d.x === -g.dirX && d.y === -g.dirY));
+  if (!opts.length) opts = dirs;
+  const dist = d => {
+    let nx = g.x + d.x; const ny = g.y + d.y;
+    if (nx < 0) nx = COLS - 1; if (nx >= COLS) nx = 0;
+    return Math.abs(player.x - nx) + Math.abs(player.y - ny);
+  };
+  let best = opts[0];
+  if (powerTimer > 0) {
+    for (const d of opts) if (dist(d) > dist(best)) best = d;
+    if (Math.random() < 0.6) best = opts[(Math.random() * opts.length) | 0];
+  } else {
+    for (const d of opts) if (dist(d) < dist(best)) best = d;
+    const chaos = Math.max(0.2, 0.42 - (level - 1) * 0.05);
+    if (Math.random() < chaos && opts.length > 1) best = opts[(Math.random() * opts.length) | 0];
+  }
+  g.dirX = best.x; g.dirY = best.y;
+  g.x += g.dirX; g.y += g.dirY;
+  wrapX(g);
+}
+
+function step(){
+  movePlayer();
+  if (mode !== 'play') return;
+  checkGhosts();
+  if (mode !== 'play') return;
+  for (let i = 0; i < ghosts.length; i++) {
+    const g = ghosts[i];
+    g.px = g.x; g.py = g.y;
+    g.moveLag = (g.moveLag + 1) % ghostPeriod;
+    if (g.moveLag !== 0) continue;
+    moveGhost(g, i);
+  }
+  checkGhosts();
+  if (powerTimer > 0) soundPrey();
+  if (powerTimer > 0 && --powerTimer === 0) ghostEatChain = 0;
+  updateHud();
+}
+
+// ---------- Dessin ----------
+function drawMap(wallA, wallB){
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const px = x * TILE, py = y * TILE, c = map[y][x];
+    if (c === '#') {
+      ctx.fillStyle = wallA; ctx.fillRect(px, py, TILE, TILE);
+      ctx.fillStyle = wallB; ctx.fillRect(px + 3, py + 3, TILE - 6, TILE - 6);
+    } else {
+      ctx.fillStyle = '#000'; ctx.fillRect(px, py, TILE, TILE);
+      if (c === '.') { ctx.fillStyle = '#fde68a'; ctx.beginPath(); ctx.arc(px + 10, py + 10, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      else if (c === 'o') { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px + 10, py + 10, 5, 0, Math.PI * 2); ctx.fill(); }
+    }
+  }
+}
+
+function dirAngle(){
+  if (player.dirX === -1) return Math.PI;
+  if (player.dirY === 1) return Math.PI / 2;
+  if (player.dirY === -1) return -Math.PI / 2;
+  return 0;
+}
+
+function drawPlayer(open){
+  const cx = player.x * TILE + 10, cy = player.y * TILE + 10;
+  const o = open !== undefined ? open : (Math.sin(player.mouth) + 1) * 0.22 + 0.08;
+  const a = dirAngle();
+  ctx.fillStyle = '#facc15';
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, 8, a + o, a + Math.PI * 2 - o);
+  ctx.closePath(); ctx.fill();
+}
+
+// Animation de mort : Paca se fige, tourne vers le haut, s'ouvre jusqu'à disparaître, puis petite étincelle
+function drawDeath(t){
+  const cx = player.x * TILE + 10, cy = player.y * TILE + 10;
+  if (t < 350) { drawPlayer(); return; }
+  if (t < 1450) {
+    const k = (t - 350) / 1100;                      // 0 → 1
+    const o = 0.15 + k * (Math.PI - 0.15);           // la bouche s'ouvre jusqu'au demi-tour complet
+    if (o >= Math.PI - 0.02) return;
+    const a = -Math.PI / 2;                          // tournée vers le haut
+    ctx.fillStyle = '#facc15';
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, 8, a + o, a + Math.PI * 2 - o);
+    ctx.closePath(); ctx.fill();
+    return;
+  }
+  if (t < 1850) {
+    const k = (t - 1450) / 400;
+    ctx.strokeStyle = 'rgba(250,204,21,' + (1 - k) + ')';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const an = i * Math.PI / 4;
+      const r1 = 3 + k * 6, r2 = 6 + k * 9;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(an) * r1, cy + Math.sin(an) * r1);
+      ctx.lineTo(cx + Math.cos(an) * r2, cy + Math.sin(an) * r2);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGhost(g){
+  if (g.dead) return;
+  const x = g.x * TILE + 2, y = g.y * TILE + 3;
+  let visible = true;
+  if (powerTimer > 0 && powerTimer <= POWER_FLASH_STEPS) visible = Math.floor(powerTimer / 2) % 2 === 0;
+  ctx.fillStyle = powerTimer > 0 ? (visible ? '#2563eb' : '#ffffff') : g.color;
+  ctx.fillRect(x, y + 4, 16, 11);
+  ctx.beginPath(); ctx.arc(x + 8, y + 4, 8, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x + 5, y + 7, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 11, y + 7, 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(x + 5, y + 7, 1, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 11, y + 7, 1, 0, Math.PI * 2); ctx.fill();
+}
+
+function draw(now){
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (mode === 'clear') {
+    // Fin de niveau : le labyrinthe clignote
+    const t = now - modeT;
+    const flash = Math.floor(t / 180) % 2 === 1;
+    drawMap(flash ? '#ffffff' : pal[0], flash ? '#e5e7eb' : pal[1]);
+    drawPlayer(0.25);
+    return;
+  }
+  drawMap(pal[0], pal[1]);
+  if (mode === 'dying') {
+    const t = now - modeT;
+    if (t < 350) ghosts.forEach(drawGhost);         // les fantômes disparaissent quand Paca fond
+    drawDeath(t);
+    return;
+  }
+  drawPlayer();
+  ghosts.forEach(drawGhost);
+}
+
+// ---------- Boucle ----------
+let lastStep = 0;
+function loop(now){
+  if (mode === 'play' && !document.hidden) {
+    if (!lastStep) lastStep = now;
+    if (now - lastStep >= STEP_MS) { lastStep = now; step(); }
+  }
+  if (mode === 'dying' && now - modeT >= 2000) afterDeath();
+  if (mode === 'clear' && now - modeT >= 1600) { level++; loadLevel(); ready(); }
+  draw(now);
+  requestAnimationFrame(loop);
+}
+document.addEventListener('visibilitychange', () => { lastStep = 0; });
+
+// ---------- Commandes ----------
+function bindDir(id, dx, dy){
+  $(id).addEventListener('pointerdown', ev => { ev.preventDefault(); setDirection(dx, dy); });
+}
+bindDir('up', 0, -1); bindDir('down', 0, 1); bindDir('left', -1, 0); bindDir('right', 1, 0);
+document.addEventListener('keydown', e => {
+  const k = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[e.key];
+  if (k) { e.preventDefault(); setDirection(k[0], k[1]); }
+});
+restartBtn.addEventListener('click', () => { unlockAudio(); newGame(); });
+
+newGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

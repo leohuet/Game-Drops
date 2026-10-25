@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SIMSIM</title>
+<style>
+body{
+  margin:0;
+  background:#081421;
+  color:white;
+  font-family:sans-serif;
+  text-align:center;
+}
+h1{margin-top:20px}
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  max-width:300px;
+  margin:20px auto;
+}
+.btn{
+  height:120px;
+  border-radius:20px;
+  border:none;
+}
+.red{background:#d62839}
+.green{background:#2a9d57}
+.blue{background:#2276d2}
+.yellow{background:#d9b300}
+.lit{filter:brightness(1.6)}
+</style>
+</head>
+<body>
+
+<h1>SIMSIM</h1>
+<p id="level">Niveau 0</p>
+
+<div class="grid">
+  <button class="btn red" data-c="red"></button>
+  <button class="btn green" data-c="green"></button>
+  <button class="btn blue" data-c="blue"></button>
+  <button class="btn yellow" data-c="yellow"></button>
+</div>
+
+<button onclick="start()">START</button>
+
+<script>
+let seq=[], user=[], level=0, playing=false;
+
+const freq = {
+  red: 330,
+  green: 392,
+  blue: 262,
+  yellow: 523
+};
+
+let ctx;
+
+function initAudio(){
+  if(!ctx){
+    ctx = new (window.AudioContext||window.webkitAudioContext)();
+  }
+}
+
+function playSound(f){
+  initAudio();
+
+  let osc1 = ctx.createOscillator();
+  let osc2 = ctx.createOscillator();
+  let gain = ctx.createGain();
+
+  osc1.type="sine";
+  osc2.type="triangle";
+
+  osc1.frequency.value = f;
+  osc2.frequency.value = f*2;
+
+  gain.gain.value = 0.0001;
+
+  osc1.connect(gain);
+  osc2.connect(gain);
+  gain.connect(ctx.destination);
+
+  let t = ctx.currentTime;
+
+  // attaque rapide
+  gain.gain.exponentialRampToValueAtTime(0.2, t+0.02);
+  // decay
+  gain.gain.exponentialRampToValueAtTime(0.001, t+0.25);
+
+  // léger vibrato
+  osc1.frequency.setValueAtTime(f, t);
+  osc1.frequency.linearRampToValueAtTime(f*1.05, t+0.1);
+  osc1.frequency.linearRampToValueAtTime(f, t+0.2);
+
+  osc1.start(t);
+  osc2.start(t);
+
+  osc1.stop(t+0.25);
+  osc2.stop(t+0.25);
+}
+
+function flash(c){
+  let el = document.querySelector('[data-c='+c+']');
+  el.classList.add("lit");
+  playSound(freq[c]);
+  setTimeout(()=>el.classList.remove("lit"),300);
+}
+
+function next(){
+  user=[];
+  level++;
+  document.getElementById("level").innerText="Niveau "+level;
+
+  let c = Object.keys(freq)[Math.floor(Math.random()*4)];
+  seq.push(c);
+
+  playSeq();
+}
+
+async function playSeq(){
+  playing=true;
+  for(let c of seq){
+    flash(c);
+    await new Promise(r=>setTimeout(r,500));
+  }
+  playing=false;
+}
+
+function press(c){
+  if(playing) return;
+
+  flash(c);
+  user.push(c);
+
+  if(user[user.length-1]!==seq[user.length-1]){
+    alert("Perdu !");
+    seq=[];
+    level=0;
+    document.getElementById("level").innerText="Niveau 0";
+    return;
+  }
+
+  if(user.length===seq.length){
+    setTimeout(next,600);
+  }
+}
+
+document.querySelectorAll(".btn").forEach(b=>{
+  b.onclick=()=>press(b.dataset.c);
+});
+
+function start(){
+  seq=[];
+  level=0;
+  next();
+}
+</script>
+
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Un poème au hasard</title>
+
+<style>
+  /* COULEURS : modifie-les à ta guise */
+  :root {
+    --fond: #f6f1e7;
+    --texte: #2b2b2b;
+    --accent: #8a3b2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fond: #17181c; --texte: #e6e3dc; --accent: #e0a07e; }
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;              /* centre le poème au milieu de l'écran */
+    align-items: center;
+    justify-content: center;
+    background: var(--fond);
+    color: var(--texte);
+    font-family: Georgia, serif;
+    text-align: center;
+  }
+  main { padding: 1.5rem; max-width: 30rem; }
+  h1 { color: var(--accent); font-size: 1.6rem; font-weight: normal; margin-bottom: 1.5rem; }
+  p  { font-size: 1.2rem; line-height: 1.8; margin: 0; }
+  small { display: block; margin-top: 2rem; opacity: 0.6; }
+</style>
+</head>
+
+<body>
+<main>
+  <h1 id="titre"></h1>
+  <p id="vers"></p>
+  <small>Rafraîchis la page pour un nouveau poème</small>
+</main>
+
+<script>
+  // LISTE DES POÈMES
+  // Pour en ajouter un : copie un bloc { ... }, sans oublier la virgule à la fin.
+  // Chaque ligne du poème est séparée par \n
+  var poemes = [
+    {
+      titre: "Matin",
+      texte: "Le jour pose ses doigts\nsur la vitre embuée.\nLe café fume encore,\nla ville s'est tue."
+    },
+    {
+      titre: "Pluie",
+      texte: "Chaque goutte frappe un toit\ncomme une petite note.\nLa rue devient un piano\nque personne ne joue."
+    },
+    {
+      titre: "Le chat",
+      texte: "Il dort dans un carré de soleil,\nroulé comme une virgule.\nLe monde peut bien attendre\nqu'il ouvre un œil."
+    },
+    {
+      titre: "Voyage",
+      texte: "Dans le train du soir\nles champs défilent en gris.\nJe garde sur mes genoux\nun peu de ton absence."
+    },
+    {
+      titre: "Étoiles",
+      texte: "Elles étaient déjà là\navant nos premiers mots.\nTrès loin, elles brillent encore\nsans savoir qu'on les regarde."
+    },
+    {
+      titre: "Mer",
+      texte: "La vague apporte un coquillage\net reprend ses promesses.\nSur le sable, mes pas\nsont effacés un à un."
+    }
+  ];
+
+  // ÉTAPE 1 : choisir un numéro au hasard (de 0 au nombre de poèmes - 1)
+  var numero = Math.floor(Math.random() * poemes.length);
+  var poeme = poemes[numero];
+
+  // ÉTAPE 2 : afficher le titre et le texte dans la page
+  document.getElementById("titre").textContent = poeme.titre;
+  document.getElementById("vers").innerHTML = poeme.texte.split("\n").join("<br>");
+</script>
+</body>
+</html>
