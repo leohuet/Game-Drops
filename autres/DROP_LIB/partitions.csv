@@ -1,0 +1,9 @@
+# Table de partitions de DROP_LIB (4 Mo de flash) : le programme garde 1,19 Mo, tout le reste va aux fichiers.
+# L'IDE Arduino l'utilise tout seul quand ce fichier est dans le dossier du croquis, quel que soit le
+# « Partition Scheme » choisi. Sans ce fichier, choisir « No OTA (2MB APP/2MB SPIFFS) » (1,9 Mo de place).
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x130000,
+spiffs,   data, spiffs,  0x140000, 0x2B0000,
+coredump, data, coredump,0x3F0000, 0x10000,
